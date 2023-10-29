@@ -1,0 +1,104 @@
+version: '3.9'
+
+services:
+  nginx:
+    build:
+      context: ./deploy
+      dockerfile: nginx.Dockerfile
+      target: dev
+    depends_on:
+      - api
+      - client
+    ports:
+      - 80:80
+  client:
+    build:
+      context: ./client
+      dockerfile: ./deploy/Dockerfile
+      target: dev
+    volumes:
+      - node_modules:/app/node_modules
+      - ./client/app:/app
+    tty: true
+  api:
+    build:
+      context: ./api
+      dockerfile: ./deploy/Dockerfile
+      target: dev
+    image: client_bulksearch_dev:${CLIENT_BULKSEARCH_VERSION:-latest}
+    volumes:
+      # Adds current directory as volume.
+      - ./api:/app/src/
+
+    env_file:
+      - ./deploy/.env.dev
+
+  db:
+    build:
+      context: ./deploy
+      dockerfile: ./postgres.Dockerfile
+      target: dev
+    image: db_dev
+    hostname: client_bulksearch-db
+    volumes:
+      - client_bulksearch-db-data-dev:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: pg_isready -U client_bulksearch
+      interval: 2s
+      timeout: 3s
+      retries: 40
+    env_file:
+      - ./deploy/.env.dev
+
+  migrator:
+    image: client_bulksearch_dev:${CLIENT_BULKSEARCH_VERSION:-latest}
+    restart: "no"
+    command: alembic upgrade head
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./deploy/.env.dev
+  redis:
+    image: bitnami/redis:7.2.1
+    hostname: "client_bulksearch-redis"
+    restart: always
+    environment:
+      ALLOW_EMPTY_PASSWORD: "yes"
+    healthcheck:
+      test: redis-cli ping
+      interval: 1s
+      timeout: 3s
+      retries: 50
+
+  worker:
+    build:
+      context: ./api
+      dockerfile: ./deploy/worker.Dockerfile
+      target: dev
+    working_dir: /app/src/celery
+    command: bash -c "celery -A tasks worker -P prefork --loglevel=info"
+    env_file:
+      - ./deploy/.env.dev
+
+  celery-beat:
+    build:
+      context: ./api
+      dockerfile: ./deploy/worker.Dockerfile
+      target: dev
+    working_dir: /app/src/celery
+    command: bash -c "celery -A tasks beat --loglevel=info"
+    env_file:
+      - ./deploy/.env.dev
+    depends_on:
+      - redis
+      - worker
+
+volumes:
+  node_modules:
+    name: node_modules
+  client_bulksearch-db-data-dev:
+    name: client_bulksearch-db-data-dev
+  client_bulksearch-web-data:
+    name: client_bulksearch-web-data
